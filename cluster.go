@@ -294,33 +294,41 @@ process:
 }
 
 func (c *clusterClient) DoMulti(ctx context.Context, multi ...Completed) (results []RedisResult) {
+	slotConnMap := make(map[string]uint16, len(c.conns))
+
 	if len(multi) == 0 {
 		return nil
 	}
+
+	commands := make(map[uint16][]Completed, len(c.conns))
+	cIndexes := make(map[uint16][]int, len(c.conns))
+
 	slots := make(map[uint16]int, 8)
+
 	for _, cmd := range multi {
 		slots[cmd.Slot()]++
 	}
+
 	if len(slots) > 2 && slots[cmds.InitSlot] > 0 {
 		panic(panicMixCxSlot)
 	}
-	commands := make(map[uint16][]Completed, len(slots))
-	cIndexes := make(map[uint16][]int, len(slots))
-	if len(slots) == 2 && slots[cmds.InitSlot] > 0 {
-		delete(slots, cmds.InitSlot)
-		for slot := range slots {
-			commands[slot] = multi
+
+	for i, cmd := range multi {
+		slotConnection, err := c.pick(cmd.Slot())
+		// handle erroneous command slots (will be filled in doMultiCache)
+		slotConnAddress := ""
+		if err == nil {
+			slotConnAddress = slotConnection.Addr()
 		}
-	} else {
-		for slot, count := range slots {
-			cIndexes[slot] = make([]int, 0, count)
-			commands[slot] = make([]Completed, 0, count)
+
+		slot, ok := slotConnMap[slotConnAddress]
+		if !ok {
+			slot = cmd.Slot()
+			slotConnMap[slotConnAddress] = slot
 		}
-		for i, cmd := range multi {
-			slot := cmd.Slot()
-			commands[slot] = append(commands[slot], cmd)
-			cIndexes[slot] = append(cIndexes[slot], i)
-		}
+
+		commands[slot] = append(commands[slot], cmd)
+		cIndexes[slot] = append(cIndexes[slot], i)
 	}
 
 	results = make([]RedisResult, len(multi))
@@ -468,29 +476,30 @@ process:
 }
 
 func (c *clusterClient) DoMultiCache(ctx context.Context, multi ...CacheableTTL) (results []RedisResult) {
+	slotConnMap := make(map[string]uint16, len(c.conns))
+
 	if len(multi) == 0 {
 		return nil
 	}
-	slots := make(map[uint16]int, 8)
-	for _, cmd := range multi {
-		slots[cmd.Cmd.Slot()]++
-	}
-	commands := make(map[uint16][]CacheableTTL, len(slots))
-	cIndexes := make(map[uint16][]int, len(slots))
-	if len(slots) == 1 {
-		for slot := range slots {
-			commands[slot] = multi
+	commands := make(map[uint16][]CacheableTTL, len(c.conns))
+	cIndexes := make(map[uint16][]int, len(c.conns))
+
+	for i, cmd := range multi {
+		slotConnection, err := c.pick(cmd.Cmd.Slot())
+		// handle erroneous command slots (will be filled in doMultiCache)
+		slotConnAddress := ""
+		if err == nil {
+			slotConnAddress = slotConnection.Addr()
 		}
-	} else {
-		for slot, count := range slots {
-			cIndexes[slot] = make([]int, 0, count)
-			commands[slot] = make([]CacheableTTL, 0, count)
+
+		slot, ok := slotConnMap[slotConnAddress]
+		if !ok {
+			slot = cmd.Cmd.Slot()
+			slotConnMap[slotConnAddress] = slot
 		}
-		for i, cmd := range multi {
-			slot := cmd.Cmd.Slot()
-			commands[slot] = append(commands[slot], cmd)
-			cIndexes[slot] = append(cIndexes[slot], i)
-		}
+
+		commands[slot] = append(commands[slot], cmd)
+		cIndexes[slot] = append(cIndexes[slot], i)
 	}
 
 	results = make([]RedisResult, len(multi))
